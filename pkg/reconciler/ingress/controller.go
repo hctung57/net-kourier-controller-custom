@@ -185,8 +185,8 @@ func NewController(ctx context.Context, cmw configmap.Watcher) *controller.Impl 
 			return serviceInformer.Lister().Services(ns).Get(name)
 		},
 		impl.Tracker)
-	r.ingressTranslator = &ingressTranslator
 
+	r.ingressTranslator = &ingressTranslator
 	// Initialize the Envoy snapshot.
 	snapshot, err := r.caches.ToEnvoySnapshot(ctx)
 	if err != nil {
@@ -300,7 +300,6 @@ func NewController(ctx context.Context, cmw configmap.Watcher) *controller.Impl 
 			},
 		},
 	})
-
 	return impl
 }
 

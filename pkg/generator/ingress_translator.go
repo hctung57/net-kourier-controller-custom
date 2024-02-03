@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -47,12 +48,15 @@ import (
 )
 
 type translatedIngress struct {
-	name                    types.NamespacedName
-	sniMatches              []*envoy.SNIMatch
-	clusters                []*v3.Cluster
-	externalVirtualHosts    []*route.VirtualHost
-	externalTLSVirtualHosts []*route.VirtualHost
-	internalVirtualHosts    []*route.VirtualHost
+	name                         types.NamespacedName
+	sniMatches                   []*envoy.SNIMatch
+	clusters                     []*v3.Cluster
+	externalVirtualHostsCloud    []*route.VirtualHost
+	externalVirtualHostsEdge     []*route.VirtualHost
+	externalTLSVirtualHostsCloud []*route.VirtualHost
+	externalTLSVirtualHostsEdge  []*route.VirtualHost
+	internalVirtualHostsCloud    []*route.VirtualHost
+	internalVirtualHostsEdge     []*route.VirtualHost
 }
 
 type IngressTranslator struct {
@@ -110,16 +114,22 @@ func (translator *IngressTranslator) translateIngress(ctx context.Context, ingre
 			PrivateKey:       secret.Data[keyFieldInSecret]})
 	}
 
-	internalHosts := make([]*route.VirtualHost, 0, len(ingress.Spec.Rules))
-	externalHosts := make([]*route.VirtualHost, 0, len(ingress.Spec.Rules))
-	externalTLSHosts := make([]*route.VirtualHost, 0, len(ingress.Spec.Rules))
+	internalHostsCloud := make([]*route.VirtualHost, 0, len(ingress.Spec.Rules))
+	internalHostsEdge := make([]*route.VirtualHost, 0, len(ingress.Spec.Rules))
+	externalHostsCloud := make([]*route.VirtualHost, 0, len(ingress.Spec.Rules))
+	externalHostsEdge := make([]*route.VirtualHost, 0, len(ingress.Spec.Rules))
+	externalTLSHostsCloud := make([]*route.VirtualHost, 0, len(ingress.Spec.Rules))
+	externalTLSHostsEdge := make([]*route.VirtualHost, 0, len(ingress.Spec.Rules))
 	clusters := make([]*v3.Cluster, 0, len(ingress.Spec.Rules))
 
 	for i, rule := range ingress.Spec.Rules {
 		ruleName := fmt.Sprintf("(%s/%s).Rules[%d]", ingress.Namespace, ingress.Name, i)
 
-		routes := make([]*route.Route, 0, len(rule.HTTP.Paths))
-		tlsRoutes := make([]*route.Route, 0, len(rule.HTTP.Paths))
+		routes_cloud := make([]*route.Route, 0, len(rule.HTTP.Paths))
+		tlsRoutes_cloud := make([]*route.Route, 0, len(rule.HTTP.Paths))
+
+		routes_edge := make([]*route.Route, 0, len(rule.HTTP.Paths))
+		tlsRoutes_edge := make([]*route.Route, 0, len(rule.HTTP.Paths))
 		for _, httpPath := range rule.HTTP.Paths {
 			// Default the path to "/" if none is passed.
 			path := httpPath.Path
@@ -129,7 +139,8 @@ func (translator *IngressTranslator) translateIngress(ctx context.Context, ingre
 
 			pathName := fmt.Sprintf("%s.Paths[%s]", ruleName, path)
 
-			wrs := make([]*route.WeightedCluster_ClusterWeight, 0, len(httpPath.Splits))
+			wrs_cloud := make([]*route.WeightedCluster_ClusterWeight, 0, len(httpPath.Splits))
+			wrs_edge := make([]*route.WeightedCluster_ClusterWeight, 0, len(httpPath.Splits))
 			for _, split := range httpPath.Splits {
 				// The FQN of the service is sufficient here, as clusters towards the
 				// same service are supposed to be deduplicated anyway.
@@ -175,8 +186,10 @@ func (translator *IngressTranslator) translateIngress(ctx context.Context, ingre
 				}
 
 				var (
-					publicLbEndpoints []*endpoint.LbEndpoint
-					typ               v3.Cluster_DiscoveryType
+					publicLbEndpointsCloud []*endpoint.LbEndpoint
+					publicLbEndpointsEdge  []*endpoint.LbEndpoint
+					publicLbEndpoints      []*endpoint.LbEndpoint
+					typ                    v3.Cluster_DiscoveryType
 				)
 				if service.Spec.Type == corev1.ServiceTypeExternalName {
 					// If the service is of type ExternalName, we add a single endpoint.
@@ -184,9 +197,11 @@ func (translator *IngressTranslator) translateIngress(ctx context.Context, ingre
 					publicLbEndpoints = []*endpoint.LbEndpoint{
 						envoy.NewLBEndpoint(service.Spec.ExternalName, uint32(externalPort)),
 					}
+					log.Print(publicLbEndpoints)
 				} else {
 					// For all other types, fetch the endpoints object.
 					endpoints, err := translator.endpointsGetter(split.ServiceNamespace, split.ServiceName)
+					// log.Print("hctung 57 logs data endpoint:", endpoints)
 					if apierrors.IsNotFound(err) {
 						logger.Warnf("Endpoints '%s/%s' not yet created", split.ServiceNamespace, split.ServiceName)
 						// TODO(markusthoemmes): Find out if we should actually `continue` here.
@@ -196,7 +211,10 @@ func (translator *IngressTranslator) translateIngress(ctx context.Context, ingre
 					}
 
 					typ = v3.Cluster_STATIC
-					publicLbEndpoints = lbEndpointsForKubeEndpoints(endpoints, targetPort)
+					// activator endpoint (only update when have changed)
+					// publicLbEndpoints = lbEndpointsForKubeEndpoints(endpoints, targetPort)
+					publicLbEndpointsCloud, publicLbEndpointsEdge = lbEndpointsForKubeEndpointsTest(endpoints, targetPort)
+
 				}
 
 				connectTimeout := 5 * time.Second
@@ -223,64 +241,125 @@ func (translator *IngressTranslator) translateIngress(ctx context.Context, ingre
 						return nil, err
 					}
 				}
-				cluster := envoy.NewCluster(splitName, connectTimeout, publicLbEndpoints, http2, transportSocket, typ)
-				logger.Debugf("adding cluster: %v", cluster)
-				clusters = append(clusters, cluster)
+				cluster_cloud := envoy.NewCluster(splitName+"-cloud", connectTimeout, publicLbEndpointsCloud, http2, transportSocket, typ)
+				cluster_edge := envoy.NewCluster(splitName+"-edge", connectTimeout, publicLbEndpointsEdge, http2, transportSocket, typ)
 
-				weightedCluster := envoy.NewWeightedCluster(splitName, uint32(split.Percent), split.AppendHeaders)
-				wrs = append(wrs, weightedCluster)
+				// cluster := envoy.NewCluster(splitName, connectTimeout, publicLbEndpoints, http2, transportSocket, typ)
+				// logger.Debugf("adding cluster: %v", cluster)
+				clusters = append(clusters, cluster_cloud)
+				clusters = append(clusters, cluster_edge)
+				// log.Print("hctung57 log cluster:", clusters)
+
+				weightedClusterCloud := envoy.NewWeightedCluster(splitName+"-cloud", uint32(split.Percent), split.AppendHeaders)
+				weightedClusterEdge := envoy.NewWeightedCluster(splitName+"-edge", uint32(split.Percent), split.AppendHeaders)
+				wrs_cloud = append(wrs_cloud, weightedClusterCloud)
+				wrs_edge = append(wrs_edge, weightedClusterEdge)
+				// wrs = append(wrs, weightedClusterEdge)
+
+				// log.Print("hctung57 log weightedCluster:", wrs)
 			}
 
-			if len(wrs) != 0 {
+			if len(wrs_cloud) != 0 {
 				// disable ext_authz filter for HTTP01 challenge when the feature is enabled
 				if extAuthzEnabled && strings.HasPrefix(path, "/.well-known/acme-challenge/") {
-					routes = append(routes, envoy.NewRouteExtAuthzDisabled(
-						pathName, matchHeadersFromHTTPPath(httpPath), path, wrs, 0, httpPath.AppendHeaders, httpPath.RewriteHost))
+					routes_cloud = append(routes_cloud, envoy.NewRouteExtAuthzDisabled(
+						pathName, matchHeadersFromHTTPPath(httpPath), path, wrs_cloud, 0, httpPath.AppendHeaders, httpPath.RewriteHost))
 				} else if _, ok := os.LookupEnv("KOURIER_HTTPOPTION_DISABLED"); !ok && ingress.Spec.HTTPOption == v1alpha1.HTTPOptionRedirected && rule.Visibility == v1alpha1.IngressVisibilityExternalIP {
 					// Do not create redirect route when KOURIER_HTTPOPTION_DISABLED is set. This option is useful when front end proxy handles the redirection.
 					// e.g. Kourier on OpenShift handles HTTPOption by OpenShift Route so KOURIER_HTTPOPTION_DISABLED should be set.
-					routes = append(routes, envoy.NewRedirectRoute(
+					routes_cloud = append(routes_cloud, envoy.NewRedirectRoute(
 						pathName, matchHeadersFromHTTPPath(httpPath), path))
 				} else {
-					routes = append(routes, envoy.NewRoute(
-						pathName, matchHeadersFromHTTPPath(httpPath), path, wrs, 0, httpPath.AppendHeaders, httpPath.RewriteHost))
+					routes_cloud = append(routes_cloud, envoy.NewRoute(
+						pathName, matchHeadersFromHTTPPath(httpPath), path, wrs_cloud, 0, httpPath.AppendHeaders, httpPath.RewriteHost))
 				}
 				if len(ingress.Spec.TLS) != 0 || useHTTPSListenerWithOneCert() {
-					tlsRoutes = append(tlsRoutes, envoy.NewRoute(
-						pathName, matchHeadersFromHTTPPath(httpPath), path, wrs, 0, httpPath.AppendHeaders, httpPath.RewriteHost))
+					tlsRoutes_cloud = append(tlsRoutes_cloud, envoy.NewRoute(
+						pathName, matchHeadersFromHTTPPath(httpPath), path, wrs_cloud, 0, httpPath.AppendHeaders, httpPath.RewriteHost))
+				}
+			}
+
+			if len(wrs_edge) != 0 {
+				// disable ext_authz filter for HTTP01 challenge when the feature is enabled
+				if extAuthzEnabled && strings.HasPrefix(path, "/.well-known/acme-challenge/") {
+					routes_edge = append(routes_edge, envoy.NewRouteExtAuthzDisabled(
+						pathName, matchHeadersFromHTTPPath(httpPath), path, wrs_edge, 0, httpPath.AppendHeaders, httpPath.RewriteHost))
+				} else if _, ok := os.LookupEnv("KOURIER_HTTPOPTION_DISABLED"); !ok && ingress.Spec.HTTPOption == v1alpha1.HTTPOptionRedirected && rule.Visibility == v1alpha1.IngressVisibilityExternalIP {
+					// Do not create redirect route when KOURIER_HTTPOPTION_DISABLED is set. This option is useful when front end proxy handles the redirection.
+					// e.g. Kourier on OpenShift handles HTTPOption by OpenShift Route so KOURIER_HTTPOPTION_DISABLED should be set.
+					routes_edge = append(routes_edge, envoy.NewRedirectRoute(
+						pathName, matchHeadersFromHTTPPath(httpPath), path))
+				} else {
+					routes_edge = append(routes_edge, envoy.NewRoute(
+						pathName, matchHeadersFromHTTPPath(httpPath), path, wrs_edge, 0, httpPath.AppendHeaders, httpPath.RewriteHost))
+				}
+				if len(ingress.Spec.TLS) != 0 || useHTTPSListenerWithOneCert() {
+					tlsRoutes_edge = append(tlsRoutes_edge, envoy.NewRoute(
+						pathName, matchHeadersFromHTTPPath(httpPath), path, wrs_edge, 0, httpPath.AppendHeaders, httpPath.RewriteHost))
 				}
 			}
 		}
-
-		if len(routes) == 0 {
+		// log.Print("hctung57 log routes_cloud:", routes_cloud)
+		if len(routes_cloud) == 0 {
 			// Return nothing if there are not routes to generate.
 			return nil, nil
 		}
 
-		var virtualHost, virtualTLSHost *route.VirtualHost
+		if len(routes_edge) == 0 {
+			// Return nothing if there are not routes to generate.
+			return nil, nil
+		}
+
+		var virtualHostCloud, virtualTLSHostCloud *route.VirtualHost
 		if extAuthzEnabled {
 			contextExtensions := kmeta.UnionMaps(map[string]string{
 				"client":     "kourier",
 				"visibility": string(rule.Visibility),
 			}, ingress.GetLabels())
-			virtualHost = envoy.NewVirtualHostWithExtAuthz(ruleName, contextExtensions, domainsForRule(rule), routes)
-			if len(tlsRoutes) != 0 {
-				virtualTLSHost = envoy.NewVirtualHostWithExtAuthz(ruleName, contextExtensions, domainsForRule(rule), tlsRoutes)
+			virtualHostCloud = envoy.NewVirtualHostWithExtAuthz(ruleName, contextExtensions, domainsForRule(rule), routes_cloud)
+			if len(tlsRoutes_cloud) != 0 {
+				virtualTLSHostCloud = envoy.NewVirtualHostWithExtAuthz(ruleName, contextExtensions, domainsForRule(rule), tlsRoutes_cloud)
 			}
 		} else {
-			virtualHost = envoy.NewVirtualHost(ruleName, domainsForRule(rule), routes)
-			if len(tlsRoutes) != 0 {
-				virtualTLSHost = envoy.NewVirtualHost(ruleName, domainsForRule(rule), tlsRoutes)
+			virtualHostCloud = envoy.NewVirtualHost(ruleName, domainsForRule(rule), routes_cloud)
+			if len(tlsRoutes_cloud) != 0 {
+				virtualTLSHostCloud = envoy.NewVirtualHost(ruleName, domainsForRule(rule), tlsRoutes_cloud)
+			}
+		}
+		// log.Print("hctung57 log virtualHost ingress:", virtualHostCloud)
+		internalHostsCloud = append(internalHostsCloud, virtualHostCloud)
+		if rule.Visibility == v1alpha1.IngressVisibilityExternalIP {
+			externalHostsCloud = append(externalHostsCloud, virtualHostCloud)
+			if virtualTLSHostCloud != nil {
+				externalTLSHostsCloud = append(externalTLSHostsCloud, virtualTLSHostCloud)
 			}
 		}
 
-		internalHosts = append(internalHosts, virtualHost)
-		if rule.Visibility == v1alpha1.IngressVisibilityExternalIP {
-			externalHosts = append(externalHosts, virtualHost)
-			if virtualTLSHost != nil {
-				externalTLSHosts = append(externalTLSHosts, virtualTLSHost)
+		var virtualHostEdge, virtualTLSHostEdge *route.VirtualHost
+		if extAuthzEnabled {
+			contextExtensions := kmeta.UnionMaps(map[string]string{
+				"client":     "kourier",
+				"visibility": string(rule.Visibility),
+			}, ingress.GetLabels())
+			virtualHostEdge = envoy.NewVirtualHostWithExtAuthz(ruleName, contextExtensions, domainsForRule(rule), routes_edge)
+			if len(tlsRoutes_edge) != 0 {
+				virtualTLSHostEdge = envoy.NewVirtualHostWithExtAuthz(ruleName, contextExtensions, domainsForRule(rule), tlsRoutes_cloud)
+			}
+		} else {
+			virtualHostEdge = envoy.NewVirtualHost(ruleName, domainsForRule(rule), routes_edge)
+			if len(tlsRoutes_edge) != 0 {
+				virtualTLSHostEdge = envoy.NewVirtualHost(ruleName, domainsForRule(rule), tlsRoutes_edge)
 			}
 		}
+		// log.Print("hctung57 log virtualHost ingress:", virtualHostCloud)
+		internalHostsEdge = append(internalHostsEdge, virtualHostEdge)
+		if rule.Visibility == v1alpha1.IngressVisibilityExternalIP {
+			externalHostsEdge = append(externalHostsEdge, virtualHostEdge)
+			if virtualTLSHostEdge != nil {
+				externalTLSHostsEdge = append(externalTLSHostsEdge, virtualTLSHostEdge)
+			}
+		}
+
 	}
 
 	return &translatedIngress{
@@ -288,11 +367,14 @@ func (translator *IngressTranslator) translateIngress(ctx context.Context, ingre
 			Namespace: ingress.Namespace,
 			Name:      ingress.Name,
 		},
-		sniMatches:              sniMatches,
-		clusters:                clusters,
-		externalVirtualHosts:    externalHosts,
-		externalTLSVirtualHosts: externalTLSHosts,
-		internalVirtualHosts:    internalHosts,
+		sniMatches:                   sniMatches,
+		clusters:                     clusters,
+		externalVirtualHostsCloud:    externalHostsCloud,
+		externalVirtualHostsEdge:     externalHostsEdge,
+		externalTLSVirtualHostsCloud: externalTLSHostsCloud,
+		externalTLSVirtualHostsEdge:  externalTLSHostsEdge,
+		internalVirtualHostsCloud:    internalHostsCloud,
+		internalVirtualHostsEdge:     internalHostsEdge,
 	}, nil
 }
 
@@ -385,6 +467,18 @@ func trackService(t tracker.Interface, svcNs, svcName string, ingress *v1alpha1.
 	return nil
 }
 
+// func classifyEndpointsWithNode(kubeEndpoints *corev1.Endpoints, readyAddressCount int32) [][]*corev1.Endpoints{
+// 	classifyEndpoint := make([][]*corev1.Endpoints,2)
+// 	for _, subset := range kubeEndpoints.Subsets {
+// 		for _, address := range subset.Addresses {
+// 			if *(address.NodeName) == "cloud" {
+// 				classifyEndpoint[1] = append(classifyEndpoint, )
+// 			}
+
+// 		}
+// 	}
+// }
+
 func lbEndpointsForKubeEndpoints(kubeEndpoints *corev1.Endpoints, targetPort int32) []*endpoint.LbEndpoint {
 	var readyAddressCount int
 	for _, subset := range kubeEndpoints.Subsets {
@@ -398,11 +492,40 @@ func lbEndpointsForKubeEndpoints(kubeEndpoints *corev1.Endpoints, targetPort int
 	eps := make([]*endpoint.LbEndpoint, 0, readyAddressCount)
 	for _, subset := range kubeEndpoints.Subsets {
 		for _, address := range subset.Addresses {
+			// log.Print("hctung57 log location and endpoint:", address.IP, *(address.NodeName))
 			eps = append(eps, envoy.NewLBEndpoint(address.IP, uint32(targetPort)))
+			// log.Print("hctung57 eps", eps)
 		}
 	}
-
+	// only log endpoint
+	// log.Print("hctung57 logs eps:", eps)
 	return eps
+}
+
+func lbEndpointsForKubeEndpointsTest(kubeEndpoints *corev1.Endpoints, targetPort int32) ([]*endpoint.LbEndpoint, []*endpoint.LbEndpoint) {
+	var readyAddressCount int
+	for _, subset := range kubeEndpoints.Subsets {
+		readyAddressCount += len(subset.Addresses)
+	}
+
+	if readyAddressCount == 0 {
+		return nil, nil
+	}
+
+	eps_cloud := make([]*endpoint.LbEndpoint, 0, readyAddressCount)
+	eps_edge := make([]*endpoint.LbEndpoint, 0, readyAddressCount)
+	for _, subset := range kubeEndpoints.Subsets {
+		for _, address := range subset.Addresses {
+			if *(address.NodeName) == "cloud" {
+				eps_cloud = append(eps_cloud, envoy.NewLBEndpoint(address.IP, uint32(targetPort)))
+			} else {
+				// log.Print("hctung57 log location and endpoint:", address.IP, *(address.NodeName))
+				eps_edge = append(eps_edge, envoy.NewLBEndpoint(address.IP, uint32(targetPort)))
+			}
+
+		}
+	}
+	return eps_cloud, eps_edge
 }
 
 func matchHeadersFromHTTPPath(httpPath v1alpha1.HTTPIngressPath) []*route.HeaderMatcher {

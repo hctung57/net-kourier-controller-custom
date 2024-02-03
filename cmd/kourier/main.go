@@ -23,6 +23,7 @@ import (
 	"knative.dev/pkg/signals"
 
 	// This defines the shared main for injected controllers.
+
 	"knative.dev/pkg/injection/sharedmain"
 )
 

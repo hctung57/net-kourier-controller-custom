@@ -110,7 +110,7 @@ func (x *Endpoint) GetHostname() string {
 
 // An Endpoint that Envoy can route traffic to.
 // [#next-free-field: 6]
-type LbEndpoint struct {
+type  LbEndpoint struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields

@@ -31,7 +31,6 @@ func UpdateInfoForIngress(ctx context.Context, caches *Caches, ing *v1alpha1.Ing
 	if _, err := ingress.InsertProbe(ing); err != nil {
 		return fmt.Errorf("failed to add knative probe header: %w", err)
 	}
-
 	ingressTranslation, err := translator.translateIngress(ctx, ing, extAuthzEnabled)
 	if err != nil {
 		return fmt.Errorf("failed to translate ingress: %w", err)
@@ -40,6 +39,8 @@ func UpdateInfoForIngress(ctx context.Context, caches *Caches, ing *v1alpha1.Ing
 	if ingressTranslation == nil {
 		return nil
 	}
-
+	// for key, value := range caches.translatedIngresses {
+	// 	// log.Printf("hctung57 logs data in cache - Key: %v, Value: %v\n", key, &value.clusters)
+	// }
 	return caches.UpdateIngress(ctx, ingressTranslation)
 }

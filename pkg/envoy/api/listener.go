@@ -32,6 +32,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/durationpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 	"k8s.io/apimachinery/pkg/types"
 
 	"knative.dev/net-kourier/pkg/config"
@@ -46,7 +47,6 @@ type SNIMatch struct {
 	PrivateKey       []byte
 }
 
-// NewHTTPListener creates a new Listener at the given port, backed by the given manager.
 func NewHTTPListener(manager *hcm.HttpConnectionManager, port uint32, enableProxyProtocol bool) (*listener.Listener, error) {
 	filters, err := createFilters(manager)
 	if err != nil {
@@ -62,13 +62,90 @@ func NewHTTPListener(manager *hcm.HttpConnectionManager, port uint32, enableProx
 		listenerFilter = append(listenerFilter, proxyProtocolListenerFilter)
 	}
 
+	// log.Print("hctung57 log filters:", filters)
 	return &listener.Listener{
 		Name:            CreateListenerName(port),
 		Address:         createAddress(port),
 		ListenerFilters: listenerFilter,
-		FilterChains: []*listener.FilterChain{{
-			Filters: filters,
-		}},
+		FilterChains: []*listener.FilterChain{
+			{
+				Filters: filters,
+			},
+		},
+	}, nil
+}
+
+// NewHTTPListener creates a new Listener at the given port, backed by the given manager.
+func NewHTTPListenerDual(manager_cloud *hcm.HttpConnectionManager, manager_edge *hcm.HttpConnectionManager, port uint32, enableProxyProtocol bool) (*listener.Listener, error) {
+	filters_cloud, err := createFilters(manager_cloud)
+	if err != nil {
+		return nil, err
+	}
+
+	filters_edge, err := createFilters(manager_edge)
+	if err != nil {
+		return nil, err
+	}
+
+	var listenerFilter []*listener.ListenerFilter
+	if enableProxyProtocol {
+		proxyProtocolListenerFilter, err := createProxyProtocolListenerFilter()
+		if err != nil {
+			return nil, err
+		}
+		listenerFilter = append(listenerFilter, proxyProtocolListenerFilter)
+	}
+
+	filterChainMatch_cloud := &listener.FilterChainMatch{
+		SourceType: 0,
+		SourcePrefixRanges: []*core.CidrRange{
+			{
+				AddressPrefix: "192.168.122.57",
+				PrefixLen:     wrapperspb.UInt32(32),
+			},
+			{
+				AddressPrefix: "192.168.122.58",
+				PrefixLen:     wrapperspb.UInt32(32),
+			},
+			{
+				AddressPrefix: "10.233.105.0",
+				PrefixLen:     wrapperspb.UInt32(24),
+			},
+			{
+				AddressPrefix: "10.233.97.0",
+				PrefixLen:     wrapperspb.UInt32(24),
+			},
+		},
+	}
+
+	filterChainMatch_edge := &listener.FilterChainMatch{
+		SourceType: 0,
+		SourcePrefixRanges: []*core.CidrRange{
+			{
+				AddressPrefix: "192.168.122.59",
+				PrefixLen:     wrapperspb.UInt32(32),
+			},
+			{
+				AddressPrefix: "10.233.75.0",
+				PrefixLen:     wrapperspb.UInt32(24),
+			},
+		},
+	}
+	// log.Print("hctung57 log filters:", filters)
+	return &listener.Listener{
+		Name:            CreateListenerName(port),
+		Address:         createAddress(port),
+		ListenerFilters: listenerFilter,
+		FilterChains: []*listener.FilterChain{
+			{
+				FilterChainMatch: filterChainMatch_cloud,
+				Filters:          filters_cloud,
+			},
+			{
+				FilterChainMatch: filterChainMatch_edge,
+				Filters:          filters_edge,
+			},
+		},
 	}, nil
 }
 

@@ -52,6 +52,7 @@ const (
 
 	// TracingCollectorFullEndpoint is the config map key to configure tracing at kourier gateway level
 	TracingCollectorFullEndpoint = "tracing-collector-full-endpoint"
+	// TracingCollectorFullEndpoint = ""
 )
 
 func DefaultConfig() *Kourier {

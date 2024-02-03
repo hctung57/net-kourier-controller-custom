@@ -1,0 +1,187 @@
+# node:
+#   id: alpha
+#   cluster: alpha
+#   locality:
+#     region: alpha
+#     zone: alpha
+#     sub_zone: alpha
+
+# cluster_manager:
+#   local_cluster_name: zone
+
+static_resources:
+  listeners:
+  - name: listener_0
+    address:
+      socket_address:
+        address: 0.0.0.0
+        port_value: 8080
+    filter_chains:
+    - filter_chain_match:
+        source_type: any
+        source_prefix_ranges:
+          address_prefix: 192.168.101.100
+          prefix_len: 32  
+      filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress_http
+          http_filters:
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+          route_config:
+            name: all
+            virtual_hosts:
+            - name: shuka
+              domains: ["*"]
+              routes:
+              - name: all
+                match:
+                  prefix: "/all"
+                route:
+                  prefix_rewrite: "/"
+                  cluster: all
+              - name: ichini
+                match:
+                  prefix: "/ichini"
+                route:
+                  prefix_rewrite: "/"
+                  cluster: ichini
+              - name: zone
+                match:
+                  prefix: "/zone"
+                route:
+                  prefix_rewrite: "/"
+                  cluster: zone_a
+    - filter_chain_match:
+        source_type: any
+        source_prefix_ranges:
+          address_prefix: 192.168.101.11
+          prefix_len: 32  
+      filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress_http
+          http_filters:
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+          route_config:
+            name: all
+            virtual_hosts:
+            - name: shuka
+              domains: ["*"]
+              routes:
+              - name: all
+                match:
+                  prefix: "/all"
+                route:
+                  prefix_rewrite: "/"
+                  cluster: all
+              - name: ichini
+                match:
+                  prefix: "/ichini"
+                route:
+                  prefix_rewrite: "/"
+                  cluster: ichini
+              - name: zone
+                match:
+                  prefix: "/zone"
+                route:
+                  prefix_rewrite: "/"
+                  cluster: zone_b
+
+  clusters:
+  - name: all
+    type: strict_dns
+    lb_policy: round_robin
+    load_assignment:
+      cluster_name: all
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 192.168.101.100
+                port_value: 8001
+        - endpoint:
+            address:
+              socket_address:
+                address: 192.168.101.100
+                port_value: 8002
+        - endpoint:
+            address:
+              socket_address:
+                address: 192.168.101.100
+                port_value: 8003
+  - name: ichini
+    type: strict_dns
+    lb_policy: round_robin
+    load_assignment:
+      cluster_name: ichini
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 192.168.101.100
+                port_value: 8001
+        - endpoint:
+            address:
+              socket_address:
+                address: 192.168.101.100
+                port_value: 8002
+  - name: zone_a
+    # type: static
+    load_assignment:
+      cluster_name: zone_a
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 192.168.101.100
+                port_value: 8001
+  - name: zone_b
+    # type: static
+    # lb_policy: round_robin
+    load_assignment:
+      cluster_name: zone_b
+      endpoints:
+      - lb_endpoints:
+        - endpoint:
+            address:
+              socket_address:
+                address: 192.168.101.11
+                port_value: 8001
+  # - name: zone
+  #   type: EDS
+  #   eds_cluster_config:
+  #   lb_policy: round_robin
+  #   load_assignment:
+  #     cluster_name: zone
+  #     endpoints:
+  #     - lb_endpoints:
+  #       - endpoint:
+  #           address:
+  #             socket_address:
+  #               address: 192.168.101.100
+  #               port_value: 8001
+  #     - lb_endpoints:
+  #       - endpoint:
+  #           address:
+  #             socket_address:
+  #               address: 192.168.101.11
+  #               port_value: 8001
+  #   common_lb_config:
+  #     zone_aware_lb_config:
+  #       min_cluster_size: 1
+  
+admin:
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901
